@@ -2,10 +2,12 @@
 name = "wifisnipe-rs"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 itertools = "0.10.5"
 lazy_static = "1.4.0"
+regex = "1.7.1"
 serialport = "4.2.0"

@@ -1,15 +1,15 @@
 #[macro_use]
 extern crate lazy_static;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::io::{self, Read};
+use std::mem::MaybeUninit;
 use std::str;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use actix::prelude::*;
-use ringbuf::HeapRb;
+use ringbuf::{Consumer, HeapRb, SharedRb};
 use serialport;
 
 lazy_static! {
@@ -27,32 +27,15 @@ lazy_static! {
     };
 }
 
-// Acteur pour la
-
-#[derive(Message)]
-#[rtype(result = "()")]
-struct Frame(Vec<u8>, usize);
-
-struct Parser;
-impl Actor for Parser {
-    type Context = Context<Self>;
-}
-impl Handler<Frame> for Parser {
-    type Result = ();
-    fn handle(&mut self, msg: Frame, _ctx: &mut Self::Context) -> Self::Result {
-        
-    }
-}
-
-#[actix::main]
-async fn main() {
-    let mut rb = HeapRb::<Vec<u8>>::new(100);
-    let (mut tx, mut rx) = rb.split();
+fn main() {
+    // FIFO queue
+    let rb = HeapRb::<Vec<u8>>::new(255);
+    // Recuperer Producteur et Consommateur
+    let (mut tx, rx) = rb.split();
+    // Envoi du consommateur dans le thread pour le traitement
     thread::spawn(move || {
         parse(rx);
     });
-    // Lancer l'acteur
-    let parser_addr = Parser.start();
     // Ouvrir le port serie
     let mut port = serialport::new("\\\\.\\COM3", 115_200)
         .timeout(Duration::from_millis(30))
@@ -62,26 +45,31 @@ async fn main() {
     let mut serial_buf: Vec<u8> = vec![0; 1000];
     // Cache la valeur de retour du send
     let mut _res;
+    // TODO: Revoir ce qu'est 
     loop {
         match port.read(serial_buf.as_mut_slice()) {
-            Ok(t) => _res = parser_addr.send(Frame(serial_buf.to_vec(), t)).await,
+            Ok(_) => _res = tx.push(serial_buf.to_vec()),
             Err(ref e) if e.kind() == io::ErrorKind::TimedOut => (),
             Err(e) => eprintln!("{:?}", e),
         }
     }
 }
 
-fn parse() {
-    while 
+fn parse(mut queue_rx: Consumer<Vec<u8>, Arc<SharedRb<Vec<u8>, Vec<MaybeUninit<Vec<u8>>>>>>) {
     loop {
+        while queue_rx.is_empty() {
+            // Ne rien faire si la queue est vide
+        }
+        // Recupere un element de la FIFO
+        let frame: Vec<u8> = queue_rx.pop().unwrap();
         let channel: u8;
         let mac_address: &str;
         let rssi: &str;
         let ssid: &str;
         let str_frame: &str;
         let splitted_frame: Vec<_>;
-        let mut frame_tmp = frame.clone();
-
+        let mut frame_tmp: Vec<u8> = frame.clone();
+        // TODO: Faire le découpage
         // Enleve le cractere de debut de transmission
         frame_tmp.remove(0);
         /* if frame_tmp[frame_tmp.len()-1] == 0x1F {
@@ -90,14 +78,16 @@ fn parse() {
         // Convertis le vecteur de codes ASCII en chaine de caracteres
         match str::from_utf8(&frame_tmp) {
             Ok(f) => str_frame = f,
-            Err(_) => str_frame = "",
+            Err(_) => str_frame = "ERROR",
         }
         println!("{str_frame}");
+
         // Split au niveau des caracteres de controle
         splitted_frame = str_frame.split('\x1F').collect();
         // println!("{:?}", splitted_frame);
         // Check suivant si le channel est a un chiffre ou a deux chiffres
         if frame_tmp[1] == 0x1F {
+            // Enlever 48 pour retourner du code ASCII au numéro
             channel = frame_tmp[0] - 48;
         } else {
             channel = (splitted_frame[0]).parse::<u8>().unwrap()
@@ -106,6 +96,7 @@ fn parse() {
         mac_address = splitted_frame[1];
         rssi = splitted_frame[2];
         ssid = splitted_frame[splitted_frame.len() - 1];
-        // println!("{channel} {mac_address} {rssi} {ssid}");
+        println!("{channel} {mac_address} {rssi} {ssid}");
+        // TODO: Ajouter aux HashMaps
     }
 }

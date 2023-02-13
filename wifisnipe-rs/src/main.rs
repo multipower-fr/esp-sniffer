@@ -1,17 +1,23 @@
 #[macro_use]
 extern crate lazy_static;
+extern crate futures;
 
 use std::collections::HashMap;
-use std::io::{self, Read};
+use std::io;
 use std::mem::MaybeUninit;
 use std::str;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
-use std::convert::TryFrom;
 
 use regex::Regex;
-use ringbuf::{Consumer, Producer, HeapRb, SharedRb};
+use ringbuf::{Consumer, HeapRb, SharedRb};
+
+use futures::stream::StreamExt;
+use tokio_util::codec::{Decoder, Encoder};
+
+use bytes::BytesMut;
+use std::env;
+use tokio_serial::SerialPortBuilderExt;
 
 lazy_static! {
     static ref CHANNELS: Mutex<HashMap<String, Vec<u8>>> = {
@@ -28,47 +34,61 @@ lazy_static! {
     };
 }
 
-fn to_u8(number: usize) -> u8 {
-    u8::try_from(number).ok().unwrap()
-}
+#[cfg(windows)]
+const DEFAULT_TTY: &str = "COM3";
 
-fn main() {
-    // FIFO queue
-    let raw_queue = HeapRb::<Vec<u8>>::new(255);
-    // Recuperer Producteur et Consommateur
-    let (mut raw_queue_tx, raw_queue_rx) = raw_queue.split();
-    // Envoi du consommateur dans le thread pour le traitement
-    thread::spawn(move || {
-        parse(raw_queue_rx);
-    });
-    // Ouvrir le port serie
-    let mut port = serialport::new("\\\\.\\COM3", 115_200)
-        .timeout(Duration::from_millis(30))
-        .open_native()
-        .expect("Failed to open port");
-    // Buffer serie
-    let mut serial_buf: Vec<u8> = vec![0; 512];
-    // Cache la valeur de retour du send
-    let mut _res;
-    // TODO: Revoir ce qu'est
-    loop {
-        match port.read_to_end(&mut serial_buf) {
-            // Append au vec le nombre de caractères écrits
-            Ok(written) => _res = raw_queue_tx.push(send(serial_buf.to_vec(), written)),
-            Err(ref e) if e.kind() == io::ErrorKind::TimedOut => (),
-            Err(e) => eprintln!("{:?}", e),
+struct LineCodec;
+
+impl Decoder for LineCodec {
+    type Item = String;
+    type Error = io::Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        let newline = src.as_ref().iter().position(|b| *b == b'\n');
+        if let Some(n) = newline {
+            let line = src.split_to(n + 1);
+            return match str::from_utf8(line.as_ref()) {
+                Ok(s) => Ok(Some(s.to_string())),
+                Err(_) => Err(io::Error::new(io::ErrorKind::Other, "Invalid String")),
+            };
         }
+        Ok(None)
     }
 }
 
-fn send(mut frame: Vec<u8>, written: usize) -> Vec<u8> {
-    frame.push(to_u8(written));
-    frame
+impl Encoder<String> for LineCodec {
+    type Error = io::Error;
+
+    fn encode(&mut self, _item: String, _dst: &mut BytesMut) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }
 
-fn parse(mut raw_queue_rx: Consumer<Vec<u8>, Arc<SharedRb<Vec<u8>, Vec<MaybeUninit<Vec<u8>>>>>>) {
+#[tokio::main]
+async fn main() -> tokio_serial::Result<()> {
+    let mut args = env::args();
+    let tty_path = args.nth(1).unwrap_or_else(|| DEFAULT_TTY.into());
+    // FIFO queue
+    let data_queue = HeapRb::<String>::new(255);
+    // Recuperer Producteur et Consommateur
+    let (mut data_queue_tx, data_queue_rx) = data_queue.split();
+    // Envoi du consommateur dans le thread pour le traitement
+    thread::spawn(move || {
+        parse_str(data_queue_rx);
+    });
+    // Ouvrir le port serie
+    let port = tokio_serial::new(tty_path, 115_200).open_native_async()?;
+    let mut reader = LineCodec.framed(port);
+    while let Some(line_result) = reader.next().await {
+        let line = line_result.expect("Failed to read line");
+        data_queue_tx.push(line).unwrap();
+    }
+    Ok(())
+}
+
+fn parse_str(mut data_queue_rx: Consumer<String, Arc<SharedRb<String, Vec<MaybeUninit<String>>>>>) {
     loop {
-        while raw_queue_rx.is_empty() {
+        while data_queue_rx.is_empty() {
             // Ne rien faire si la queue est vide
         }
         lazy_static! {
@@ -76,36 +96,17 @@ fn parse(mut raw_queue_rx: Consumer<Vec<u8>, Arc<SharedRb<Vec<u8>, Vec<MaybeUnin
                 Regex::new(r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$").unwrap();
         }
         // Recupere un element de la FIFO
-        let frame: Vec<u8> = raw_queue_rx.pop().unwrap();
-        let written = frame[frame.len() - 1];
-        let mut frame_tmp: Vec<u8> = (&frame)[0..written as usize - 4].to_vec();
-        // TODO: Faire le découpage
-        // Enleve le cractere de debut de transmission
-        frame_tmp.remove(0);
-        /* if frame_tmp[frame_tmp.len()-1] == 0x1F {
-            frame_tmp.remove(frame_tmp.len() -1);
-        }*/
-        // Convertis le vecteur de codes ASCII en chaine de caracteres
-        let str_frame: &str = match str::from_utf8(&frame_tmp) {
-            Ok(f) => f,
-            Err(_) => "ERROR",
-        };
-        println!("str_frame = {str_frame}");
-
+        let frame: String = data_queue_rx.pop().unwrap();
+        let cleaned_frame: String = frame.replace(&['\u{2}', '\u{3}', '\r', '\n'][..], "");
         // Split au niveau des caracteres de controle
-        let splitted_frame: Vec<_> = str_frame.split('\x1F').collect();
+        let splitted_frame: Vec<_> = cleaned_frame.split('\x1F').collect();
         if splitted_frame.len() != 3 || splitted_frame.len() != 4 {
             println!("{:?}", splitted_frame);
         }
         // Check suivant si le channel est a un chiffre ou a deux chiffres
-        let channel: u8 = if frame_tmp[1] == 0x1F {
-            // Enlever 48 pour retourner du code ASCII au numéro
-            frame_tmp[0] - 48
-        } else {
-            match (splitted_frame[0]).parse::<u8>() {
-                Ok(decoded) => decoded,
-                Err(_) => 0,
-            }
+        let channel: u8 = match (splitted_frame[0]).parse::<u8>() {
+            Ok(decoded) => decoded,
+            Err(_) => 0,
         };
         let mac_address: &str = if MAC_REGEX.is_match(splitted_frame[1]) {
             splitted_frame[1]
@@ -113,7 +114,11 @@ fn parse(mut raw_queue_rx: Consumer<Vec<u8>, Arc<SharedRb<Vec<u8>, Vec<MaybeUnin
             ""
         };
         let rssi: &str = splitted_frame[2];
-        let ssid: &str = if splitted_frame[splitted_frame.len() - 2] != rssi { splitted_frame[splitted_frame.len() - 2] } else { splitted_frame[splitted_frame.len() - 1] };
+        let ssid: &str = if splitted_frame[splitted_frame.len() - 2] != rssi {
+            splitted_frame[splitted_frame.len() - 2]
+        } else {
+            splitted_frame[splitted_frame.len() - 1]
+        };
         println!("{channel} {mac_address} {rssi} {ssid}");
         // TODO: Ajouter aux HashMaps
     }

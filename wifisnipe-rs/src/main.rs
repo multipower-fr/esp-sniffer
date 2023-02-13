@@ -8,7 +8,9 @@ use std::str;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use std::convert::TryFrom;
 
+use regex::Regex;
 use ringbuf::{Consumer, HeapRb, SharedRb};
 
 lazy_static! {
@@ -26,6 +28,10 @@ lazy_static! {
     };
 }
 
+fn to_u8(number: usize) -> u8 {
+    u8::try_from(number).ok().unwrap()
+}
+
 fn main() {
     // FIFO queue
     let rb = HeapRb::<Vec<u8>>::new(255);
@@ -41,13 +47,14 @@ fn main() {
         .open_native()
         .expect("Failed to open port");
     // Buffer serie
-    let mut serial_buf: Vec<u8> = vec![0; 1000];
+    let mut serial_buf: Vec<u8> = vec![0; 512];
     // Cache la valeur de retour du send
     let mut _res;
     // TODO: Revoir ce qu'est
     loop {
         match port.read(serial_buf.as_mut_slice()) {
-            Ok(_) => _res = tx.push(serial_buf.to_vec()),
+            // Append au vec le nombre de caractères écrits
+            Ok(written) => _res = tx.push((&(serial_buf)[0..written - 3]).to_vec()),
             Err(ref e) if e.kind() == io::ErrorKind::TimedOut => (),
             Err(e) => eprintln!("{:?}", e),
         }
@@ -58,6 +65,10 @@ fn parse(mut queue_rx: Consumer<Vec<u8>, Arc<SharedRb<Vec<u8>, Vec<MaybeUninit<V
     loop {
         while queue_rx.is_empty() {
             // Ne rien faire si la queue est vide
+        }
+        lazy_static! {
+            static ref MAC_REGEX: Regex =
+                Regex::new(r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$").unwrap();
         }
         // Recupere un element de la FIFO
         let frame: Vec<u8> = queue_rx.pop().unwrap();
@@ -77,18 +88,24 @@ fn parse(mut queue_rx: Consumer<Vec<u8>, Arc<SharedRb<Vec<u8>, Vec<MaybeUninit<V
 
         // Split au niveau des caracteres de controle
         let splitted_frame: Vec<_> = str_frame.split('\x1F').collect();
-        // println!("{:?}", splitted_frame);
+        println!("{:?}", splitted_frame);
         // Check suivant si le channel est a un chiffre ou a deux chiffres
         let channel: u8 = if frame_tmp[1] == 0x1F {
             // Enlever 48 pour retourner du code ASCII au numéro
             frame_tmp[0] - 48
         } else {
-            (splitted_frame[0]).parse::<u8>().unwrap()
+            match (splitted_frame[0]).parse::<u8>() {
+                Ok(decoded) => decoded,
+                Err(_) => 0,
+            }
         };
-        // println!("{:}", channel);
-        let mac_address: &str = splitted_frame[1];
+        let mac_address: &str = if MAC_REGEX.is_match(splitted_frame[1]) {
+            splitted_frame[1]
+        } else {
+            ""
+        };
         let rssi: &str = splitted_frame[2];
-        let ssid: &str = splitted_frame[splitted_frame.len() - 1];
+        let ssid: &str = if splitted_frame[splitted_frame.len() - 2] != rssi { splitted_frame[splitted_frame.len() - 2] } else { splitted_frame[splitted_frame.len() - 1] };
         println!("{channel} {mac_address} {rssi} {ssid}");
         // TODO: Ajouter aux HashMaps
     }

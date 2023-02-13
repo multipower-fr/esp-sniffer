@@ -3,20 +3,18 @@ extern crate lazy_static;
 extern crate futures;
 
 use std::collections::HashMap;
+use std::env;
 use std::io;
 use std::mem::MaybeUninit;
 use std::str;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use bytes::BytesMut;
+use futures::stream::StreamExt;
 use regex::Regex;
 use ringbuf::{Consumer, HeapRb, SharedRb};
-
-use futures::stream::StreamExt;
 use tokio_util::codec::{Decoder, Encoder};
-
-use bytes::BytesMut;
-use std::env;
 use tokio_serial::SerialPortBuilderExt;
 
 lazy_static! {
@@ -86,6 +84,8 @@ async fn main() -> tokio_serial::Result<()> {
     Ok(())
 }
 
+// Silence un warning sur la complexité de type, nécessaire ici
+#[allow(clippy::type_complexity)]
 fn parse_str(mut data_queue_rx: Consumer<String, Arc<SharedRb<String, Vec<MaybeUninit<String>>>>>) {
     loop {
         while data_queue_rx.is_empty() {
@@ -104,10 +104,7 @@ fn parse_str(mut data_queue_rx: Consumer<String, Arc<SharedRb<String, Vec<MaybeU
             println!("{:?}", splitted_frame);
         }
         // Check suivant si le channel est a un chiffre ou a deux chiffres
-        let channel: u8 = match (splitted_frame[0]).parse::<u8>() {
-            Ok(decoded) => decoded,
-            Err(_) => 0,
-        };
+        let channel: u8 = (splitted_frame[0]).parse::<u8>().unwrap_or(0);
         let mac_address: &str = if MAC_REGEX.is_match(splitted_frame[1]) {
             splitted_frame[1]
         } else {

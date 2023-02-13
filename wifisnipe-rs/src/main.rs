@@ -2,6 +2,7 @@
 extern crate lazy_static;
 extern crate futures;
 
+use itertools::sorted;
 use std::collections::HashMap;
 use std::env;
 use std::io;
@@ -14,8 +15,8 @@ use bytes::BytesMut;
 use futures::stream::StreamExt;
 use regex::Regex;
 use ringbuf::{Consumer, HeapRb, SharedRb};
-use tokio_util::codec::{Decoder, Encoder};
 use tokio_serial::SerialPortBuilderExt;
+use tokio_util::codec::{Decoder, Encoder};
 
 lazy_static! {
     static ref MACS: Mutex<Vec<String>> = {
@@ -101,6 +102,7 @@ fn parse_str(mut data_queue_rx: Consumer<String, Arc<SharedRb<String, Vec<MaybeU
         }
         // Recupere un element de la FIFO
         let frame: String = data_queue_rx.pop().unwrap();
+        // Clean la trame en enlevant tout les caractères spéciaux qui nous
         let cleaned_frame: String = frame.replace(&['\u{2}', '\u{3}', '\r', '\n'][..], "");
         // Split au niveau des caracteres de controle
         let splitted_frame: Vec<_> = cleaned_frame.split('\x1F').collect();
@@ -129,23 +131,38 @@ fn parse_str(mut data_queue_rx: Consumer<String, Arc<SharedRb<String, Vec<MaybeU
 fn store(channel: u8, mac_address: String, ssid: String) {
     let mut mac_table = MACS.lock().unwrap();
     let mut channel_table = CHANNELS.lock().unwrap();
-    
+
     // let mut rssi_table = RSSIS.lock().unwrap();
-    if ! mac_table.contains(&mac_address) {
+    if !mac_table.contains(&mac_address) {
         mac_table.push(mac_address.clone())
     }
     channel_table
         .entry(mac_address.clone())
+        .and_modify(|channel_vec| {
+            if channel_vec.len() > 1 {
+                if channel_vec.contains(&channel) {
+                    channel_vec.remove(channel_vec.iter().rposition(|idx| *idx == channel).unwrap());
+                }
+            }
+        })
         .or_insert_with(Vec::new)
         .push(channel);
-    println!("CHANNEL: {:?}", channel_table.get_mut(&*mac_address));
+
+    println!("CHANNEL: {:?}", channel_table.get(&*mac_address));
     if ssid != "" {
         let mut ssid_table = SSIDS.lock().unwrap();
         ssid_table
             .entry(mac_address.clone())
+            .and_modify(|ssid_vec| {
+                if ssid_vec.len() > 1 {
+                    if ssid_vec.contains(&ssid) {
+                        ssid_vec.remove(ssid_vec.iter().rposition(|idx| *idx == ssid).unwrap());
+                    }
+                }
+            })
             .or_insert_with(Vec::new)
             .push(ssid);
-        println!("SSIDs: {:?}", ssid_table.get_mut(&*mac_address))
+        println!("SSIDs: {:?}", ssid_table.get(&*mac_address))
     }
     /*
     rssi_table

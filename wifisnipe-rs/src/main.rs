@@ -11,7 +11,7 @@ use std::time::Duration;
 use std::convert::TryFrom;
 
 use regex::Regex;
-use ringbuf::{Consumer, HeapRb, SharedRb};
+use ringbuf::{Consumer, Producer, HeapRb, SharedRb};
 
 lazy_static! {
     static ref CHANNELS: Mutex<HashMap<String, Vec<u8>>> = {
@@ -34,12 +34,12 @@ fn to_u8(number: usize) -> u8 {
 
 fn main() {
     // FIFO queue
-    let rb = HeapRb::<Vec<u8>>::new(255);
+    let raw_queue = HeapRb::<Vec<u8>>::new(255);
     // Recuperer Producteur et Consommateur
-    let (mut tx, rx) = rb.split();
+    let (mut raw_queue_tx, raw_queue_rx) = raw_queue.split();
     // Envoi du consommateur dans le thread pour le traitement
     thread::spawn(move || {
-        parse(rx);
+        parse(raw_queue_rx);
     });
     // Ouvrir le port serie
     let mut port = serialport::new("\\\\.\\COM3", 115_200)
@@ -52,18 +52,23 @@ fn main() {
     let mut _res;
     // TODO: Revoir ce qu'est
     loop {
-        match port.read(serial_buf.as_mut_slice()) {
+        match port.read_to_end(&mut serial_buf) {
             // Append au vec le nombre de caractères écrits
-            Ok(written) => _res = tx.push((&(serial_buf)[0..written - 3]).to_vec()),
+            Ok(written) => _res = raw_queue_tx.push(send(serial_buf.to_vec(), written)),
             Err(ref e) if e.kind() == io::ErrorKind::TimedOut => (),
             Err(e) => eprintln!("{:?}", e),
         }
     }
 }
 
-fn parse(mut queue_rx: Consumer<Vec<u8>, Arc<SharedRb<Vec<u8>, Vec<MaybeUninit<Vec<u8>>>>>>) {
+fn send(mut frame: Vec<u8>, written: usize) -> Vec<u8> {
+    frame.push(to_u8(written));
+    frame
+}
+
+fn parse(mut raw_queue_rx: Consumer<Vec<u8>, Arc<SharedRb<Vec<u8>, Vec<MaybeUninit<Vec<u8>>>>>>) {
     loop {
-        while queue_rx.is_empty() {
+        while raw_queue_rx.is_empty() {
             // Ne rien faire si la queue est vide
         }
         lazy_static! {
@@ -71,8 +76,9 @@ fn parse(mut queue_rx: Consumer<Vec<u8>, Arc<SharedRb<Vec<u8>, Vec<MaybeUninit<V
                 Regex::new(r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$").unwrap();
         }
         // Recupere un element de la FIFO
-        let frame: Vec<u8> = queue_rx.pop().unwrap();
-        let mut frame_tmp: Vec<u8> = frame.clone();
+        let frame: Vec<u8> = raw_queue_rx.pop().unwrap();
+        let written = frame[frame.len() - 1];
+        let mut frame_tmp: Vec<u8> = (&frame)[0..written as usize - 4].to_vec();
         // TODO: Faire le découpage
         // Enleve le cractere de debut de transmission
         frame_tmp.remove(0);
@@ -84,11 +90,13 @@ fn parse(mut queue_rx: Consumer<Vec<u8>, Arc<SharedRb<Vec<u8>, Vec<MaybeUninit<V
             Ok(f) => f,
             Err(_) => "ERROR",
         };
-        println!("{str_frame}");
+        println!("str_frame = {str_frame}");
 
         // Split au niveau des caracteres de controle
         let splitted_frame: Vec<_> = str_frame.split('\x1F').collect();
-        println!("{:?}", splitted_frame);
+        if splitted_frame.len() != 3 || splitted_frame.len() != 4 {
+            println!("{:?}", splitted_frame);
+        }
         // Check suivant si le channel est a un chiffre ou a deux chiffres
         let channel: u8 = if frame_tmp[1] == 0x1F {
             // Enlever 48 pour retourner du code ASCII au numéro

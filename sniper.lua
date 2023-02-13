@@ -25,6 +25,7 @@ function start_sniff()
     else
         send = string.format("\2%d\31%s\31%d\31%s\31\3", pkt.channel, pkt.dstmac_hex, pkt.rssi, pkt.ie_ssid)
     end
+    tmr.delay(10)
     print(send)
     end)
 end

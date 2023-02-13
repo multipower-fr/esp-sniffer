@@ -9,12 +9,11 @@ minimum_version = "1.67.0"
 
 [dependencies]
 bytes = "1.4.0"
+chrono = "0.4.23"
 futures = "0.3.26"
-itertools = "0.10.5"
 lazy_static = "1.4.0"
 regex = "1.7.1"
 ringbuf = "0.3.2"
-serialport = "4.2.0"
 tokio = { version = "1.25.0", features = ["full"] }
 tokio-serial = "5.4.4"
 tokio-util = { version = "0.7.7", features = ["full"] }

@@ -18,6 +18,10 @@ use tokio_util::codec::{Decoder, Encoder};
 use tokio_serial::SerialPortBuilderExt;
 
 lazy_static! {
+    static ref MACS: Mutex<Vec<String>> = {
+        let macs: Vec<String> = Vec::new();
+        Mutex::new(macs)
+    };
     static ref CHANNELS: Mutex<HashMap<String, Vec<u8>>> = {
         let cha = HashMap::new();
         Mutex::new(cha)
@@ -100,23 +104,53 @@ fn parse_str(mut data_queue_rx: Consumer<String, Arc<SharedRb<String, Vec<MaybeU
         let cleaned_frame: String = frame.replace(&['\u{2}', '\u{3}', '\r', '\n'][..], "");
         // Split au niveau des caracteres de controle
         let splitted_frame: Vec<_> = cleaned_frame.split('\x1F').collect();
-        if splitted_frame.len() != 3 || splitted_frame.len() != 4 {
+        if splitted_frame.len() != 4 || splitted_frame.len() != 5 {
             println!("{:?}", splitted_frame);
         }
         // Check suivant si le channel est a un chiffre ou a deux chiffres
         let channel: u8 = (splitted_frame[0]).parse::<u8>().unwrap_or(0);
-        let mac_address: &str = if MAC_REGEX.is_match(splitted_frame[1]) {
-            splitted_frame[1]
+        let mac_address: String = if MAC_REGEX.is_match(splitted_frame[1]) {
+            splitted_frame[1].to_string()
         } else {
-            ""
+            "".to_string()
         };
-        let rssi: &str = splitted_frame[2];
-        let ssid: &str = if splitted_frame[splitted_frame.len() - 2] != rssi {
-            splitted_frame[splitted_frame.len() - 2]
+        let rssi: String = splitted_frame[2].to_string();
+        let ssid: String = if splitted_frame[splitted_frame.len() - 2] != rssi {
+            splitted_frame[splitted_frame.len() - 2].to_string()
         } else {
-            splitted_frame[splitted_frame.len() - 1]
+            splitted_frame[splitted_frame.len() - 1].to_string()
         };
         println!("{channel} {mac_address} {rssi} {ssid}");
         // TODO: Ajouter aux HashMaps
+        store(channel, mac_address, ssid)
     }
+}
+
+fn store(channel: u8, mac_address: String, ssid: String) {
+    let mut mac_table = MACS.lock().unwrap();
+    let mut channel_table = CHANNELS.lock().unwrap();
+    
+    // let mut rssi_table = RSSIS.lock().unwrap();
+    if ! mac_table.contains(&mac_address) {
+        mac_table.push(mac_address.clone())
+    }
+    channel_table
+        .entry(mac_address.clone())
+        .or_insert_with(Vec::new)
+        .push(channel);
+    println!("CHANNEL: {:?}", channel_table.get_mut(&*mac_address));
+    if ssid != "" {
+        let mut ssid_table = SSIDS.lock().unwrap();
+        ssid_table
+            .entry(mac_address.clone())
+            .or_insert_with(Vec::new)
+            .push(ssid);
+        println!("SSIDs: {:?}", ssid_table.get_mut(&*mac_address))
+    }
+    /*
+    rssi_table
+        .entry(mac_address.clone())
+        .or_insert_with(Vec::new)
+        .push(rssi);
+    */
 }

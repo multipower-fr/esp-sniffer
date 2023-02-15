@@ -230,7 +230,7 @@ fn store(channel: u8, mac_address: String, rssi: String, ssid: String) {
                     // Convertis le timestamp dans un format qui permets l'affichage
                     let seen_ts: DateTime<Local> = (*last_seen.get(&mac.clone()).unwrap()).into();
                     let diff = Local::now() - seen_ts;
-                    if diff.num_seconds() >= 30 {
+                    if diff.num_minutes() >= 30 {
                         continue;
                     }
                     println!(

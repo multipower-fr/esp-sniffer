@@ -140,7 +140,6 @@ fn parse_str(mut data_queue_rx: Consumer<String, Arc<SharedRb<String, Vec<MaybeU
         } else {
             splitted_frame[splitted_frame.len() - 1].to_string()
         };
-        // println!("{channel} {mac_address} {rssi} {ssid}");
         store(channel, mac_address, rssi, ssid);
     }
 }
@@ -177,7 +176,6 @@ fn store(channel: u8, mac_address: String, rssi: String, ssid: String) {
             .or_insert_with(Vec::new)
             .push(channel);
     }
-    // println!("CHANNEL: {:?}", channel_table.get(&*mac_address));
 
     // Ne rien faire si le SSID est vide
     if !ssid.is_empty() {
@@ -200,7 +198,6 @@ fn store(channel: u8, mac_address: String, rssi: String, ssid: String) {
                 .or_insert_with(Vec::new)
                 .push(ssid);
         }
-        // println!("SSIDs: {:?}", ssid_table.get(&*mac_address))
     }
     // RSSI
     let mut rssi_table = RSSIS.lock().unwrap();
@@ -209,7 +206,6 @@ fn store(channel: u8, mac_address: String, rssi: String, ssid: String) {
         .entry(mac_address)
         .and_modify(|rssi_tmp| *rssi_tmp = (rssi).parse::<i16>().unwrap_or(-50))
         .or_insert((rssi).parse::<i16>().unwrap_or(-50));
-    // println!("RSSI {:?}", rssi_table.get(&mac_address));
 
     // S'assurer que la clock n'a pas skew en arrière
     if let Ok(dur) = LAST_PRINT.elapsed() {
@@ -234,7 +230,7 @@ fn store(channel: u8, mac_address: String, rssi: String, ssid: String) {
                     // Convertis le timestamp dans un format qui permets l'affichage
                     let seen_ts: DateTime<Local> = (*last_seen.get(&mac.clone()).unwrap()).into();
                     let diff = Local::now() - seen_ts;
-                    if diff.num_seconds() >= 60 {
+                    if diff.num_seconds() >= 30 {
                         continue;
                     }
                     println!(

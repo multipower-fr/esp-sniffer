@@ -514,4 +514,5 @@ Cargo.lock
 ### VisualStudioCode Patch ###
 # Ignore all local history of files
 .history
-.ionide
+.ionidebindings/
+bindings/

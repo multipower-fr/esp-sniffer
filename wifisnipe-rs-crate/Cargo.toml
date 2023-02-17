@@ -1,0 +1,24 @@
+[package]
+name = "wifisnipe-rs-crate"
+version = "0.1.0"
+edition = "2021"
+publish = false
+rust-version = "1.67"
+
+[lib]
+name="libwifisnipe"
+crate-type = ["cdylib"]
+test = false
+
+[dependencies]
+bytes = "1.4.0"
+chrono = "0.4.23"
+futures = "0.3.26"
+lazy_static = "1.4.0"
+libc = { version = "0.2.139", features = ["extra_traits"] }
+regex = "1.7.1"
+ringbuf = "0.3.2"
+safer-ffi = { version = "0.0.10", features = ["proc_macros", "alloc"] }
+tokio = { version = "1.25.0", features = ["full"] }
+tokio-serial = "5.4.4"
+tokio-util = { version = "0.7.7", features = ["full"] }

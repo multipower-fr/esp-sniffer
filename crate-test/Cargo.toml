@@ -1,0 +1,22 @@
+[package]
+name = "wifisnipe-test-crate"
+version = "0.1.0"
+edition = "2021"
+publish = false
+rust-version = "1.67"
+
+[lib]
+name = "libwifisnipe_test"
+crate-type = ["cdylib", "rlib"]
+test = false
+
+[dependencies]
+bytes = "1.4.0"
+chrono = "0.4.23"
+futures = "0.3.26"
+lazy_static = "1.4.0"
+libc = { version = "0.2.139", features = ["extra_traits"] }
+regex = "1.7.1"
+ringbuf = "0.3.2"
+interoptopus_backend_cpython = "0.14.15"
+interoptopus = "0.14.15"

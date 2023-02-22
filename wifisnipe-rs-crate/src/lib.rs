@@ -3,17 +3,18 @@ extern crate lazy_static;
 extern crate futures;
 
 use chrono::{DateTime, Local};
+use interoptopus::patterns::string::*;
+use interoptopus::{ffi_function, ffi_type, function, Inventory, InventoryBuilder};
 use std::collections::HashMap;
+use std::ffi::c_char;
+use std::ffi::CStr;
 use std::io;
 use std::mem::MaybeUninit;
-use std::str;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::str::{self, FromStr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::SystemTime;
-use std::ffi::CStr;
-use std::ffi::c_char;
-use ::safer_ffi::prelude::*;
 
 use bytes::BytesMut;
 use futures::stream::StreamExt;
@@ -48,23 +49,10 @@ lazy_static! {
         let ts = HashMap::new();
         Arc::new(Mutex::new(ts))
     };
-    // Timestamp du dernier print (ici statique)
-    static ref LAST_PRINT: SystemTime = SystemTime::now();
-    // Nombre de print effectués
-    static ref PRINT_COUNT: AtomicU64 = AtomicU64::new(1);
+    static ref MAC_REGEX: Regex =
+        Regex::new(r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$").unwrap();
+    static ref STOP: AtomicBool = AtomicBool::new(false);
 }
-
-#[derive_ReprC]
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ReturnedData {
-    mac: Vec<usize>,
-    channels: Vec<u32>,
-    rssi: i32,
-
-
-}
-
 
 // Structure utilisée pour scinder les informations reçues par lignes
 struct LineCodec;
@@ -94,6 +82,7 @@ impl Encoder<String> for LineCodec {
     }
 }
 
+#[tokio::main]
 async fn serial_port(port_name: String) -> tokio_serial::Result<()> {
     let port = tokio_serial::new(port_name, 115_200).open_native_async()?;
     let mut reader = LineCodec.framed(port);
@@ -107,21 +96,30 @@ async fn serial_port(port_name: String) -> tokio_serial::Result<()> {
     });
     while let Some(line_result) = reader.next().await {
         let line = line_result.expect("Failed to read line");
+        if STOP.load(Ordering::SeqCst) == true {
+            STOP.store(false, Ordering::SeqCst);
+            break;
+        }
         // Si la ligne n'est pas mauvaise, la push sur le FIFO
         data_queue_tx.push(line).unwrap();
     }
     Ok(())
 }
 
-
-#[tokio::main]
-#[ffi_export]
-pub async extern "C" fn start(tty_no: usize) {
+#[no_mangle]
+#[ffi_function]
+pub extern "C" fn start(tty_no: u32) {
     let mut port_name: String = "COM".to_owned();
     port_name.push_str(tty_no.to_string().as_str());
     thread::spawn(move || {
-        serial_port(port_name);
+        serial_port(port_name).unwrap();
     });
+}
+
+#[no_mangle]
+#[ffi_function]
+pub extern "C" fn stop() {
+    STOP.store(true, Ordering::SeqCst);
 }
 
 #[allow(clippy::type_complexity)]
@@ -129,10 +127,6 @@ fn parse_str(mut data_queue_rx: Consumer<String, Arc<SharedRb<String, Vec<MaybeU
     loop {
         while data_queue_rx.is_empty() {
             // Ne rien faire si la queue est vide
-        }
-        lazy_static! {
-            static ref MAC_REGEX: Regex =
-                Regex::new(r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$").unwrap();
         }
         // Recupere un element de la FIFO
         let frame: String = data_queue_rx.pop().unwrap();
@@ -160,7 +154,7 @@ fn parse_str(mut data_queue_rx: Consumer<String, Arc<SharedRb<String, Vec<MaybeU
     }
 }
 
-fn store(channel: u8, mac_address: String, rssi: String, ssid: String) {
+fn store(channel: u32, mac_address: String, rssi: String, ssid: String) {
     // Récupérer le lock sur les hashmaps
     let mut mac_table = MACS.lock().unwrap();
     // Ajouter a la liste des Adresses MAC connues si non dupliquées
@@ -220,42 +214,88 @@ fn store(channel: u8, mac_address: String, rssi: String, ssid: String) {
     // Ajout du dernier RSSI vu
     rssi_table
         .entry(mac_address)
-        .and_modify(|rssi_tmp| *rssi_tmp = (rssi).parse::<i16>().unwrap_or(-50))
+        .and_modify(|rssi_tmp| *rssi_tmp = (rssi).parse::<i32>().unwrap_or(-50))
         .or_insert((rssi).parse::<i32>().unwrap_or(-50));
 }
 
-pub extern fn print(mac: *const c_char) {
-    let c_str: &CStr = unsafe { CStr::from_ptr(mac) };
-    let str_slice: String = String::from_utf8_lossy(c_str.to_bytes()).to_string();
+#[no_mangle]
+#[ffi_function]
+pub extern "C" fn get_data_spec<'a>(mac: *const c_char) -> AsciiPointer<'a> {
+    let mac_str = {
+        if !mac.is_null() {
+            unsafe { CStr::from_ptr(mac) }
+        } else {
+            let message = "ERROR\0".as_bytes();
+            CStr::from_bytes_with_nul(message).unwrap()
+        }
+    };
+    let mac_str: &str = mac_str.to_str().unwrap();
+
     let seen_macs = Arc::clone(&MACS);
     let seen_ssids = Arc::clone(&SSIDS);
     let seen_channels = Arc::clone(&CHANNELS);
     let seen_rssi = Arc::clone(&RSSIS);
     let last_seen = Arc::clone(&LAST_SEEN);
-    thread::spawn(move || {
+    let to_return = thread::spawn(move || {
+        let last_seen = last_seen.lock().unwrap().clone();
         let seen_macs = seen_macs.lock().unwrap().clone();
         let seen_ssids = seen_ssids.lock().unwrap().clone();
         let seen_channels = seen_channels.lock().unwrap().clone();
         let seen_rssi = seen_rssi.lock().unwrap().clone();
-        let last_seen = last_seen.lock().unwrap().clone();
-        println!(
-            "---------- {} ----------",
-            Local::now().format("%Y-%m-%d][%H:%M:%S")
-        );
-        for mac in seen_macs.into_iter() {
-            // Convertis le timestamp dans un format qui permets l'affichage
-            let seen_ts: DateTime<Local> = (*last_seen.get(&mac.clone()).unwrap()).into();
-            let diff = Local::now() - seen_ts;
-            if diff.num_minutes() >= 30 {
-                continue;
-            }
-            println!(
-                "{mac} | Last seen : {} | {:?} | {:?} | {:?}",
+        let seen_ts: DateTime<Local> = (*last_seen.get(mac_str.clone()).unwrap()).into();
+        if seen_macs.contains(&mac_str.to_string()) {
+            format!(
+                "{mac_str} | Last seen : {} | {:?} | {:?} | {:?}\0",
                 seen_ts.format("%Y-%m-%d -- %H:%M:%S"),
-                seen_channels.get(&mac.clone()).unwrap(),
-                seen_ssids.get(&mac.clone()),
-                seen_rssi.get(&mac.clone()).unwrap()
+                seen_channels.get(mac_str.clone()).unwrap(),
+                seen_ssids.get(mac_str.clone()),
+                seen_rssi.get(mac_str.clone()).unwrap()
             )
+        } else {
+            format!("")
         }
-    });
+    })
+    .join()
+    .unwrap();
+    AsciiPointer::from_slice_with_nul(to_return.as_bytes()).unwrap()
+}
+
+#[no_mangle]
+#[ffi_function]
+pub extern "C" fn get_data_last<'a>() -> AsciiPointer<'a> {
+    let seen_macs = Arc::clone(&MACS);
+    let seen_ssids = Arc::clone(&SSIDS);
+    let seen_channels = Arc::clone(&CHANNELS);
+    let seen_rssi = Arc::clone(&RSSIS);
+    let last_seen = Arc::clone(&LAST_SEEN);
+    let to_return = thread::spawn(move || {
+        let seen_macs = seen_macs.lock().unwrap().clone();
+        let mac_str = seen_macs.get(0).unwrap();
+        let last_seen = last_seen.lock().unwrap().clone();
+        let seen_ssids = seen_ssids.lock().unwrap().clone();
+        let seen_channels = seen_channels.lock().unwrap().clone();
+        let seen_rssi = seen_rssi.lock().unwrap().clone();
+        let seen_ts: DateTime<Local> = (*last_seen.get(mac_str).unwrap()).into();
+        format!(
+            "{mac_str} | Last seen : {} | {:?} | {:?} | {:?}\0",
+            seen_ts.format("%Y-%m-%d -- %H:%M:%S"),
+            seen_channels.get(mac_str).unwrap(),
+            seen_ssids.get(mac_str),
+            seen_rssi.get(mac_str).unwrap()
+        )
+    })
+    .join()
+    .unwrap();
+    AsciiPointer::from_slice_with_nul(to_return.as_bytes()).unwrap()
+}
+
+// Define our FFI interface as `ffi_inventory` containing
+// a single function `my_function`. Types are inferred.
+pub fn ffi_inventory() -> Inventory {
+    InventoryBuilder::new()
+        .register(function!(start))
+        .register(function!(stop))
+        .register(function!(get_data_spec))
+        .register(function!(get_data_last))
+        .inventory()
 }

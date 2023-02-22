@@ -34,7 +34,8 @@ pub extern "C" fn nt_hello_world<'a>() -> AsciiPointer<'a> {
 
 #[no_mangle]
 #[ffi_function]
-pub extern "C" fn t_hello_world<'a>() -> AsciiPointer<'a> {
+
+pub extern "C" fn t_hw<'a>() -> AsciiPointer<'a> {
     // FIFO queue
     let data_queue = HeapRb::<String>::new(255);
     // Recuperer Producteur et Consommateur
@@ -49,11 +50,17 @@ pub extern "C" fn t_hello_world<'a>() -> AsciiPointer<'a> {
     AsciiPointer::from_slice_with_nul(data_queue_rx.pop().unwrap().as_bytes()).unwrap()
 }
 
+pub extern "C" fn t_hw_print<'a>() -> AsciiPointer<'a> {
+
+}
+
+
+
 // Define our FFI interface as `ffi_inventory` containing
 // a single function `my_function`. Types are inferred.
 pub fn ffi_inventory() -> Inventory {
     InventoryBuilder::new()
         .register(function!(nt_hello_world))
-        .register(function!(t_hello_world))
+        .register(function!(t_hw))
         .inventory()
 }

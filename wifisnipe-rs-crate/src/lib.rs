@@ -4,13 +4,11 @@ extern crate futures;
 
 use chrono::{DateTime, Local};
 use interoptopus::patterns::string::*;
-use interoptopus::{ffi_function, ffi_type, function, Inventory, InventoryBuilder};
+use interoptopus::{ffi_function, function, Inventory, InventoryBuilder};
 use std::collections::HashMap;
-use std::ffi::c_char;
-use std::ffi::CStr;
 use std::io;
 use std::mem::MaybeUninit;
-use std::str::{self, FromStr};
+use std::str;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -96,7 +94,7 @@ async fn serial_port(port_name: String) -> tokio_serial::Result<()> {
     });
     while let Some(line_result) = reader.next().await {
         let line = line_result.expect("Failed to read line");
-        if STOP.load(Ordering::SeqCst) == true {
+        if STOP.load(Ordering::SeqCst) {
             STOP.store(false, Ordering::SeqCst);
             break;
         }
@@ -108,18 +106,20 @@ async fn serial_port(port_name: String) -> tokio_serial::Result<()> {
 
 #[no_mangle]
 #[ffi_function]
-pub extern "C" fn start(tty_no: u32) {
+pub extern "C" fn start(tty_no: u32) -> u8 {
     let mut port_name: String = "COM".to_owned();
     port_name.push_str(tty_no.to_string().as_str());
     thread::spawn(move || {
         serial_port(port_name).unwrap();
     });
+    0
 }
 
 #[no_mangle]
 #[ffi_function]
-pub extern "C" fn stop() {
+pub extern "C" fn stop() -> u8 {
     STOP.store(true, Ordering::SeqCst);
+    0
 }
 
 #[allow(clippy::type_complexity)]
@@ -220,17 +220,8 @@ fn store(channel: u32, mac_address: String, rssi: String, ssid: String) {
 
 #[no_mangle]
 #[ffi_function]
-pub extern "C" fn get_data_spec<'a>(mac: *const c_char) -> AsciiPointer<'a> {
-    let mac_str = {
-        if !mac.is_null() {
-            unsafe { CStr::from_ptr(mac) }
-        } else {
-            let message = "ERROR\0".as_bytes();
-            CStr::from_bytes_with_nul(message).unwrap()
-        }
-    };
-    let mac_str: &str = mac_str.to_str().unwrap();
-
+pub extern "C" fn get_data_spec<'a>(mac: AsciiPointer<'static >) -> AsciiPointer<'a> {
+    let mac_str = mac.as_str().unwrap();
     let seen_macs = Arc::clone(&MACS);
     let seen_ssids = Arc::clone(&SSIDS);
     let seen_channels = Arc::clone(&CHANNELS);
@@ -242,14 +233,14 @@ pub extern "C" fn get_data_spec<'a>(mac: *const c_char) -> AsciiPointer<'a> {
         let seen_ssids = seen_ssids.lock().unwrap().clone();
         let seen_channels = seen_channels.lock().unwrap().clone();
         let seen_rssi = seen_rssi.lock().unwrap().clone();
-        let seen_ts: DateTime<Local> = (*last_seen.get(mac_str.clone()).unwrap()).into();
+        let seen_ts: DateTime<Local> = (*last_seen.get(mac_str).unwrap()).into();
         if seen_macs.contains(&mac_str.to_string()) {
             format!(
                 "{mac_str} | Last seen : {} | {:?} | {:?} | {:?}\0",
                 seen_ts.format("%Y-%m-%d -- %H:%M:%S"),
-                seen_channels.get(mac_str.clone()).unwrap(),
-                seen_ssids.get(mac_str.clone()),
-                seen_rssi.get(mac_str.clone()).unwrap()
+                seen_channels.get(mac_str).unwrap(),
+                seen_ssids.get(mac_str),
+                seen_rssi.get(mac_str).unwrap()
             )
         } else {
             format!("")
@@ -270,7 +261,7 @@ pub extern "C" fn get_data_last<'a>() -> AsciiPointer<'a> {
     let last_seen = Arc::clone(&LAST_SEEN);
     let to_return = thread::spawn(move || {
         let seen_macs = seen_macs.lock().unwrap().clone();
-        let mac_str = seen_macs.get(0).unwrap();
+        let mac_str = seen_macs.last().unwrap();
         let last_seen = last_seen.lock().unwrap().clone();
         let seen_ssids = seen_ssids.lock().unwrap().clone();
         let seen_channels = seen_channels.lock().unwrap().clone();

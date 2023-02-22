@@ -1,4 +1,3 @@
-use interoptopus::util::NamespaceMappings;
 use interoptopus::{Error, Interop};
 
 #[test]

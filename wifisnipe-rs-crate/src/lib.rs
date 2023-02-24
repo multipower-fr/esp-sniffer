@@ -6,6 +6,7 @@ use chrono::{DateTime, Local};
 use interoptopus::patterns::string::*;
 use interoptopus::{ffi_function, function, Inventory, InventoryBuilder};
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::io;
 use std::mem::MaybeUninit;
 use std::str;
@@ -218,37 +219,57 @@ fn store(channel: u32, mac_address: String, rssi: String, ssid: String) {
         .or_insert((rssi).parse::<i32>().unwrap_or(-50));
 }
 
+fn fmt_ts(ts: DateTime<Local>) -> Result<String, std::fmt::Error> {
+    let mut formatted: String = String::new();
+    write!(formatted, "{}", ts.format("%Y-%m-%d -- %H:%M:%S"))?;
+    Ok(formatted)
+}
+
 #[no_mangle]
 #[ffi_function]
-pub extern "C" fn get_data_spec<'a>(mac: AsciiPointer<'static >) -> AsciiPointer<'a> {
-    let mac_str = mac.as_str().unwrap();
+pub extern "C" fn get_data_spec<'a>(mac: AsciiPointer<'static>) -> AsciiPointer<'a> {
+    let mac_cstr = mac.as_c_str().unwrap();
+    let mac_str: String;
+    match mac_cstr.to_str() {
+        Ok(r) => mac_str = r.to_owned(),
+        Err(e) => mac_str = e.to_string(),
+    };
     let seen_macs = Arc::clone(&MACS);
     let seen_ssids = Arc::clone(&SSIDS);
     let seen_channels = Arc::clone(&CHANNELS);
     let seen_rssi = Arc::clone(&RSSIS);
     let last_seen = Arc::clone(&LAST_SEEN);
-    let to_return = thread::spawn(move || {
+    if let Ok(to_return) = thread::spawn(move || {
         let last_seen = last_seen.lock().unwrap().clone();
         let seen_macs = seen_macs.lock().unwrap().clone();
         let seen_ssids = seen_ssids.lock().unwrap().clone();
         let seen_channels = seen_channels.lock().unwrap().clone();
         let seen_rssi = seen_rssi.lock().unwrap().clone();
-        let seen_ts: DateTime<Local> = (*last_seen.get(mac_str).unwrap()).into();
-        if seen_macs.contains(&mac_str.to_string()) {
+        if seen_macs.contains(&mac_str) && MAC_REGEX.is_match(&mac_str) {
+            // Format last seen
+            let seen_ts: DateTime<Local> = (*last_seen.get(&mac_str).unwrap()).into();
+            let seen_ts_str: String;
+            match fmt_ts(seen_ts) {
+                Ok(r) => seen_ts_str = r,
+                Err(_) => seen_ts_str = String::from("0000-00-00 - 00:00:00")
+            }
+            
             format!(
                 "{mac_str} | Last seen : {} | {:?} | {:?} | {:?}\0",
-                seen_ts.format("%Y-%m-%d -- %H:%M:%S"),
-                seen_channels.get(mac_str).unwrap(),
-                seen_ssids.get(mac_str),
-                seen_rssi.get(mac_str).unwrap()
+                seen_ts_str,
+                seen_channels.get(&mac_str).unwrap(),
+                seen_ssids.get(&mac_str),
+                seen_rssi.get(&mac_str).unwrap()
             )
         } else {
-            format!("")
+            format!("\0")
         }
-    })
-    .join()
-    .unwrap();
-    AsciiPointer::from_slice_with_nul(to_return.as_bytes()).unwrap()
+    }).join() {
+        println!("{}", to_return);
+        AsciiPointer::from_slice_with_nul(to_return.as_bytes()).unwrap()
+    } else {
+        AsciiPointer::from_slice_with_nul("ERROR\0".as_bytes()).unwrap()
+    }
 }
 
 #[no_mangle]

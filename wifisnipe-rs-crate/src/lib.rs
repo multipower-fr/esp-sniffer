@@ -14,6 +14,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::SystemTime;
+use std::ffi::*;
+use ::core::{ptr, slice};
 
 use bytes::BytesMut;
 use futures::stream::StreamExt;
@@ -80,6 +82,21 @@ impl Encoder<String> for LineCodec {
         Ok(())
     }
 }
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct Data {
+    mac: String,
+    rssi: i32,
+    channels: Vec<u32>,
+    ssids: String
+}
+
+#[repr(C)]
+pub struct FFIBoxedSlice {
+    ptr: *mut Data,
+    len: usize, // number of elems
+}
+
 
 #[tokio::main]
 async fn serial_port(port_name: String) -> tokio_serial::Result<()> {
@@ -109,6 +126,7 @@ async fn serial_port(port_name: String) -> tokio_serial::Result<()> {
 #[ffi_function]
 pub extern "C" fn start(tty_no: u32) -> u8 {
     let mut port_name: String = "COM".to_owned();
+    STOP.store(false, Ordering::SeqCst);
     port_name.push_str(tty_no.to_string().as_str());
     thread::spawn(move || {
         serial_port(port_name).unwrap();
@@ -300,6 +318,41 @@ pub extern "C" fn get_data_last<'a>() -> AsciiPointer<'a> {
     .unwrap();
     AsciiPointer::from_slice_with_nul(to_return.as_bytes()).unwrap()
 }
+
+pub extern "C" fn get_data_all() -> Vec<Data> {
+    let data_vec: Vec<Data> = Vec::new();
+    let seen_macs = Arc::clone(&MACS);
+    let seen_ssids = Arc::clone(&SSIDS);
+    let seen_channels = Arc::clone(&CHANNELS);
+    let seen_rssi = Arc::clone(&RSSIS);
+    let last_seen = Arc::clone(&LAST_SEEN);
+    let to_return = thread::spawn(move || {
+        let seen_macs = seen_macs.lock().unwrap().clone();
+        let mac_str = seen_macs.last().unwrap();
+        let last_seen = last_seen.lock().unwrap().clone();
+        let seen_ssids = seen_ssids.lock().unwrap().clone();
+        let seen_channels = seen_channels.lock().unwrap().clone();
+        let seen_rssi = seen_rssi.lock().unwrap().clone();
+        let seen_ts: DateTime<Local> = (*last_seen.get(mac_str).unwrap()).into();
+        let seen_ts_str: String;
+            match fmt_ts(seen_ts) {
+                Ok(r) => seen_ts_str = r,
+                Err(_) => seen_ts_str = String::from("0000-00-00 - 00:00:00")
+        }
+        for mac in seen_macs.into_iter() {
+            let mac_vec: Data = Data {
+                mac: mac,
+                rssi: *seen_rssi.get(&mac_str.clone()).clone().unwrap(),
+                channels: *seen_channels.get(mac_str).unwrap(),
+                ssids: seen_ssids.get(mac_str).unwrap().join(" ")
+            };
+            data_vec.push(mac_vec);
+        }
+        data_vec.clone()
+        }).join().unwrap();
+        data_vec
+    }
+
 
 // Define our FFI interface as `ffi_inventory` containing
 // a single function `my_function`. Types are inferred.

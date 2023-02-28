@@ -23,3 +23,7 @@ tokio = { version = "1.25.0", features = ["full"] }
 tokio-serial = "5.4.4"
 tokio-util = { version = "0.7.7", features = ["full"] }
 interoptopus = "0.14.15"
+rifgen = "0.1.61"
+
+[build-dependencies]
+rifgen = "0.1.61"

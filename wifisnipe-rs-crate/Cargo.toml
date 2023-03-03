@@ -24,6 +24,12 @@ tokio-serial = "5.4.4"
 tokio-util = { version = "0.7.7", features = ["full"] }
 interoptopus = "0.14.15"
 rifgen = "0.1.61"
+serde = { version = "1.0.152", optional = true, features = ["derive"]}
+serde_json = { version = "1.0.93", optional = true }
 
 [build-dependencies]
 rifgen = "0.1.61"
+
+[features]
+default = ["json"]
+json = ["dep:serde", "dep:serde_json", "chrono/serde"]

@@ -14,13 +14,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::SystemTime;
-use std::ffi::*;
-use ::core::{ptr, slice};
 
 use bytes::BytesMut;
 use futures::stream::StreamExt;
 use regex::Regex;
 use ringbuf::{Consumer, HeapRb, SharedRb};
+use serde::{Deserialize, Serialize};
 use tokio_serial::SerialPortBuilderExt;
 use tokio_util::codec::{Decoder, Encoder};
 
@@ -83,12 +82,13 @@ impl Encoder<String> for LineCodec {
     }
 }
 #[repr(C)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Data {
     mac: String,
+    ts: String,
     rssi: i32,
     channels: Vec<u32>,
-    ssids: String
+    ssids: Vec<String>,
 }
 
 #[repr(C)]
@@ -96,7 +96,6 @@ pub struct FFIBoxedSlice {
     ptr: *mut Data,
     len: usize, // number of elems
 }
-
 
 #[tokio::main]
 async fn serial_port(port_name: String) -> tokio_serial::Result<()> {
@@ -247,10 +246,9 @@ fn fmt_ts(ts: DateTime<Local>) -> Result<String, std::fmt::Error> {
 #[ffi_function]
 pub extern "C" fn get_data_spec<'a>(mac: AsciiPointer<'static>) -> AsciiPointer<'a> {
     let mac_cstr = mac.as_c_str().unwrap();
-    let mac_str: String;
-    match mac_cstr.to_str() {
-        Ok(r) => mac_str = r.to_owned(),
-        Err(e) => mac_str = e.to_string(),
+    let mac_str: String = match mac_cstr.to_str() {
+        Ok(r) => r.to_owned(),
+        Err(e) => e.to_string(),
     };
     let seen_macs = Arc::clone(&MACS);
     let seen_ssids = Arc::clone(&SSIDS);
@@ -266,12 +264,11 @@ pub extern "C" fn get_data_spec<'a>(mac: AsciiPointer<'static>) -> AsciiPointer<
         if seen_macs.contains(&mac_str) && MAC_REGEX.is_match(&mac_str) {
             // Format last seen
             let seen_ts: DateTime<Local> = (*last_seen.get(&mac_str).unwrap()).into();
-            let seen_ts_str: String;
-            match fmt_ts(seen_ts) {
-                Ok(r) => seen_ts_str = r,
-                Err(_) => seen_ts_str = String::from("0000-00-00 - 00:00:00")
-            }
-            
+            let seen_ts_str: String = match fmt_ts(seen_ts) {
+                Ok(r) => r,
+                Err(_) => String::from("0000-00-00 - 00:00:00"),
+            };
+
             format!(
                 "{mac_str} | Last seen : {} | {:?} | {:?} | {:?}\0",
                 seen_ts_str,
@@ -280,9 +277,11 @@ pub extern "C" fn get_data_spec<'a>(mac: AsciiPointer<'static>) -> AsciiPointer<
                 seen_rssi.get(&mac_str).unwrap()
             )
         } else {
-            format!("\0")
+            "\0".to_string()
         }
-    }).join() {
+    })
+    .join()
+    {
         println!("{}", to_return);
         AsciiPointer::from_slice_with_nul(to_return.as_bytes()).unwrap()
     } else {
@@ -319,8 +318,11 @@ pub extern "C" fn get_data_last<'a>() -> AsciiPointer<'a> {
     AsciiPointer::from_slice_with_nul(to_return.as_bytes()).unwrap()
 }
 
-pub extern "C" fn get_data_all() -> Vec<Data> {
-    let data_vec: Vec<Data> = Vec::new();
+#[cfg(feature = "json")]
+#[no_mangle]
+#[ffi_function]
+pub extern "C" fn get_data_all_json<'a>() -> AsciiPointer<'a> {
+    let mut data_vec: Vec<Data> = Vec::new();
     let seen_macs = Arc::clone(&MACS);
     let seen_ssids = Arc::clone(&SSIDS);
     let seen_channels = Arc::clone(&CHANNELS);
@@ -328,31 +330,39 @@ pub extern "C" fn get_data_all() -> Vec<Data> {
     let last_seen = Arc::clone(&LAST_SEEN);
     let to_return = thread::spawn(move || {
         let seen_macs = seen_macs.lock().unwrap().clone();
-        let mac_str = seen_macs.last().unwrap();
         let last_seen = last_seen.lock().unwrap().clone();
         let seen_ssids = seen_ssids.lock().unwrap().clone();
         let seen_channels = seen_channels.lock().unwrap().clone();
         let seen_rssi = seen_rssi.lock().unwrap().clone();
-        let seen_ts: DateTime<Local> = (*last_seen.get(mac_str).unwrap()).into();
-        let seen_ts_str: String;
-            match fmt_ts(seen_ts) {
-                Ok(r) => seen_ts_str = r,
-                Err(_) => seen_ts_str = String::from("0000-00-00 - 00:00:00")
-        }
         for mac in seen_macs.into_iter() {
+            let seen_ts: DateTime<Local> = (*last_seen.get(&mac).unwrap()).into();
+            let seen_ts_str: String = match fmt_ts(seen_ts) {
+                Ok(r) => r,
+                Err(_) => String::from("0000-00-00 - 00:00:00"),
+            };
             let mac_vec: Data = Data {
-                mac: mac,
-                rssi: *seen_rssi.get(&mac_str.clone()).clone().unwrap(),
-                channels: *seen_channels.get(mac_str).unwrap(),
-                ssids: seen_ssids.get(mac_str).unwrap().join(" ")
+                mac: mac.to_owned(),
+                ts: seen_ts_str,
+                rssi: seen_rssi.get(&mac).unwrap_or(&-1).to_owned(),
+                channels: seen_channels.get(&mac).unwrap_or(&vec![0]).to_owned(),
+                ssids: seen_ssids
+                    .get(&mac)
+                    .unwrap_or(&vec![String::from("")])
+                    .to_owned(),
             };
             data_vec.push(mac_vec);
         }
-        data_vec.clone()
-        }).join().unwrap();
-        data_vec
-    }
+        json_serialize(data_vec)
+    })
+    .join()
+    .unwrap();
+    AsciiPointer::from_slice_with_nul(to_return.unwrap_or(String::from("")).as_bytes()).unwrap()
+}
 
+#[cfg(feature = "json")]
+fn json_serialize(data_vec: Vec<Data>) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&data_vec)
+}
 
 // Define our FFI interface as `ffi_inventory` containing
 // a single function `my_function`. Types are inferred.
@@ -360,7 +370,7 @@ pub fn ffi_inventory() -> Inventory {
     InventoryBuilder::new()
         .register(function!(start))
         .register(function!(stop))
-        .register(function!(get_data_spec))
+        .register(function!(get_data_all_json))
         .register(function!(get_data_last))
         .inventory()
 }

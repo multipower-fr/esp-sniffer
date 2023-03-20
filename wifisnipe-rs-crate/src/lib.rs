@@ -49,8 +49,10 @@ lazy_static! {
         let ts = HashMap::new();
         Arc::new(Mutex::new(ts))
     };
+    // Regex pour la vérification syntaxique de l'addresse mac
     static ref MAC_REGEX: Regex =
         Regex::new(r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$").unwrap();
+    // Signal de stop
     static ref STOP: AtomicBool = AtomicBool::new(false);
 }
 
@@ -81,6 +83,7 @@ impl Encoder<String> for LineCodec {
         Ok(())
     }
 }
+// Structure pour la serialisation
 #[repr(C)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Data {
@@ -89,12 +92,6 @@ pub struct Data {
     rssi: i32,
     channels: Vec<u32>,
     ssids: Vec<String>,
-}
-
-#[repr(C)]
-pub struct FFIBoxedSlice {
-    ptr: *mut Data,
-    len: usize, // number of elems
 }
 
 #[tokio::main]
@@ -125,6 +122,7 @@ async fn serial_port(port_name: String) -> tokio_serial::Result<()> {
 #[ffi_function]
 pub extern "C" fn start(tty_no: u32) -> u8 {
     let mut port_name: String = "COM".to_owned();
+    // Signal d'arret de l'enregistrement
     STOP.store(false, Ordering::SeqCst);
     port_name.push_str(tty_no.to_string().as_str());
     thread::spawn(move || {
@@ -136,6 +134,7 @@ pub extern "C" fn start(tty_no: u32) -> u8 {
 #[no_mangle]
 #[ffi_function]
 pub extern "C" fn stop() -> u8 {
+    // Demande l'arret
     STOP.store(true, Ordering::SeqCst);
     0
 }
@@ -148,12 +147,13 @@ fn parse_str(mut data_queue_rx: Consumer<String, Arc<SharedRb<String, Vec<MaybeU
         }
         // Recupere un element de la FIFO
         let frame: String = data_queue_rx.pop().unwrap();
-        // Clean la trame en enlevant tout les caractères spéciaux qui nous
+        // Clean la trame en enlevant tout les caractères spéciaux qui nous interesse pas
         let cleaned_frame: String = frame.replace(&['\u{2}', '\u{3}', '\r', '\n'][..], "");
         // Split au niveau des caracteres de controle
         let splitted_frame: Vec<_> = cleaned_frame.split('\x1F').collect();
-        // Check suivant si le channel est a un chiffre ou a deux chiffres
+        // Decode le channel
         let channel: u32 = (splitted_frame[0]).parse::<u32>().unwrap_or(0);
+        // Verifie la syntaxe de l'addresse
         let mac_address: String = if MAC_REGEX.is_match(splitted_frame[1]) {
             splitted_frame[1].to_string()
         } else {
@@ -356,7 +356,10 @@ pub extern "C" fn get_data_all_json<'a>() -> AsciiPointer<'a> {
     })
     .join()
     .unwrap();
-    AsciiPointer::from_slice_with_nul(to_return.unwrap_or(String::from("")).as_bytes()).unwrap()
+    let mut ret = to_return.unwrap_or(String::from(""));
+    ret.push('\0');
+    // println!("{:?}", ret.as_bytes());
+    AsciiPointer::from_slice_with_nul(ret.as_bytes()).unwrap()
 }
 
 #[cfg(feature = "json")]

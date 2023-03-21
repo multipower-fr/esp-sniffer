@@ -2,7 +2,7 @@
 extern crate lazy_static;
 extern crate futures;
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, Utc};
 use interoptopus::patterns::string::*;
 use interoptopus::{ffi_function, function, Inventory, InventoryBuilder};
 use std::collections::HashMap;
@@ -88,7 +88,7 @@ impl Encoder<String> for LineCodec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Data {
     mac: String,
-    ts: String,
+    ts: i64,
     rssi: i32,
     channels: Vec<u32>,
     ssids: Vec<String>,
@@ -108,6 +108,7 @@ async fn serial_port(port_name: String) -> tokio_serial::Result<()> {
     });
     while let Some(line_result) = reader.next().await {
         let line = line_result.expect("Failed to read line");
+        // Réponds au signal de stop
         if STOP.load(Ordering::SeqCst) {
             STOP.store(false, Ordering::SeqCst);
             break;
@@ -335,11 +336,8 @@ pub extern "C" fn get_data_all_json<'a>() -> AsciiPointer<'a> {
         let seen_channels = seen_channels.lock().unwrap().clone();
         let seen_rssi = seen_rssi.lock().unwrap().clone();
         for mac in seen_macs.into_iter() {
-            let seen_ts: DateTime<Local> = (*last_seen.get(&mac).unwrap()).into();
-            let seen_ts_str: String = match fmt_ts(seen_ts) {
-                Ok(r) => r,
-                Err(_) => String::from("0000-00-00 - 00:00:00"),
-            };
+            let seen_ts: DateTime<Utc> = (*last_seen.get(&mac).unwrap()).into();
+            let seen_ts_str: i64 = seen_ts.timestamp();
             let mac_vec: Data = Data {
                 mac: mac.to_owned(),
                 ts: seen_ts_str,
@@ -358,12 +356,11 @@ pub extern "C" fn get_data_all_json<'a>() -> AsciiPointer<'a> {
     .unwrap();
     let mut ret = to_return.unwrap_or(String::from(""));
     ret.push('\0');
-    // println!("{:?}", ret.as_bytes());
     AsciiPointer::from_slice_with_nul(ret.as_bytes()).unwrap()
 }
 
 #[cfg(feature = "json")]
-fn json_serialize(data_vec: Vec<Data>) -> Result<String, serde_json::Error> {
+fn json_serialize(data_vec: impl Serialize) -> Result<String, serde_json::Error> {
     serde_json::to_string(&data_vec)
 }
 

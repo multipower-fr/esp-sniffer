@@ -97,10 +97,20 @@ impl Encoder<String> for LineCodec {
     }
 }
 /// Structure de données pour la sérialisation en JSON
+/// 
+/// Champs:
+/// | Champ      | Type            | Description                           |
+/// |------------|-----------------|---------------------------------------|
+/// | `mac`      | `String`        | Adresse MAC                           |
+/// | `ts`       | `int`           | UNIX Timestamp (UTC)                  |
+/// | `rssi`     | `int`           | RSSI                                  |
+/// | `channels` | `Array<int>`    | Canaux où le périphérique a été vu    |
+/// | `ssid`     | `Array<String>` | SSIDs broadcastés par le périphérique |
+/// 
 #[repr(C)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Data {
-    // Addresse Mac
+    // Addresse MAC
     mac: String,
     // UNIX Timestamp (UTC)
     ts: i64,
@@ -146,11 +156,11 @@ async fn serial_port(port_name: String) -> tokio_serial::Result<()> {
 /// 
 /// | Nom du paramètre | Usage |
 /// | ---------------- | ----- |
-/// | `tty_no` | Numéro du port COM (ex. `3` va être ) |
+/// | `tty_no` | Numéro du port COM (ex. `3` => `COM3`) |
 /// 
 /// Retourne
-///   - false Si le système était stoppé
-///   - true Si le système était déjà démarré
+///   - `false` : Si le système était stoppé
+///   - `true` Si le système était déjà démarré
 #[no_mangle]
 #[ffi_function]
 #[cfg(windows)]
@@ -172,8 +182,8 @@ pub extern "C" fn start(tty_no: u32) -> bool {
 /// Fonction publique pour stopper l'enregistrement
 ///
 /// Retourne :
-///   - false Si le système était démarré
-///   - true Si le système était déjà stoppé
+///   - `false` Si le système était démarré
+///   - `true` Si le système était déjà stoppé
 #[no_mangle]
 #[ffi_function]
 pub extern "C" fn stop() -> bool {
@@ -350,7 +360,7 @@ pub extern "C" fn get_data_last<'a>() -> AsciiPointer<'a> {
 ///
 /// | Champ | Type | Valeur en cas d'erreur |
 /// | ----- | ---- | ---------------------- |
-/// | rssi  | `i32`  | `0` |
+/// | rssi  | `i32` | `0` |
 /// | channels | `Vec<u32>` | `[0]` |
 /// | ssids | `Vec<String>` | `[""]` |
 pub extern "C" fn get_data_all<'a>() -> AsciiPointer<'a> {

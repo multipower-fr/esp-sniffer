@@ -1,0 +1,66 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "cargo",
+            "command": "build",
+            "options": {
+                "cwd": "${fileDirname}"
+            },
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "build",
+            "label": "rust: cargo build"
+        },
+        {
+            "type": "cargo",
+            "command": "test",
+            "options": {
+                "cwd": "${fileDirname}"
+            },
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "test",
+            "label": "rust: cargo test"
+        },
+        {
+            "type": "cargo",
+            "command": "clippy",
+            "options": {
+                "cwd": "${fileDirname}"
+            },
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "build",
+            "label": "rust: cargo clippy"
+        },
+        {
+            "type": "cargo",
+            "command": "doc",
+            "options": {
+                "cwd": "${fileDirname}"
+            },
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "build",
+            "label": "rust: cargo doc"
+        },
+        {
+            "label": "Générer les bindings du projet",
+            "dependsOn": [
+                "rust: cargo build",
+                "rust: cargo test",
+                "rust: cargo doc"
+            ],
+            "dependsOrder": "sequence",
+            "problemMatcher": [
+                "$rustc"
+            ]
+        }
+
+    ]
+}

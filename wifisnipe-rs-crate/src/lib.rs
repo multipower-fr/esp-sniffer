@@ -1,12 +1,92 @@
+//! Traite les données arrivant du programme `esp-sniffer` pour NodeMCU
+//!
+//! ## Schéma
+//! Utilise les structures suivantes en entrée :
+//!
+//! Si le SSID est vide
+//! - `\u{2}canal\u{31}mac\u{31}rssi\{31}\u{3}`
+//!
+//! Si le SSID est présent
+//! - `\u{2}canal\u{31}mac\u{31}rssi\{31}ssid\{31}\u{3}`
+//!
+//! ## Partie NodeMCU
+//! 
+//! Voir [README.md](../../../../README.md)
+//! 
+//! ## Partie PC
+//! 
+//! ### Compilation :
+//! 
+//! #### Prérequis
+//! - [git](https://git-scm.com/download/win) 
+//! - [gh](https://github.com/cli/cli)
+//! - [Visual Studio](https://visualstudio.microsoft.com/) en sélectionnant `Développement Desktop en C++` dans `Charges de Travail` et `Anglais` (en plus de `Français`) dans `Modules Linguistiques`
+//! - [Rustup](https://rustup.rs/), l'installateur de Rust
+//!
+//! Ouvrez une fenêtre PowerShell en tant qu'Administrateur et exécuter les commandes suivantes :
+//!
+//! ```ps1
+//! # Si cela n'a pas été déjà fait :
+//! # Se connecter a votre compte GitHub
+//! gh auth login
+//! # Cloner la repo
+//! gh repo clone multipower-fr/esp-sniffer
+//!
+//! # Installez Rust Stable
+//! rustup toolchain install stable
+//! # Allez dans le dossier de la crate (librairie)
+//! cd esp-sniffer\wifisnipe-rs-crate
+//! # Compiler la libarie (enlever le --release pour la version non-optimisée de développement)
+//! cargo build --release
+//! # Vous pouvez compiler la documentation dans un format HTML en utilisant
+//! cargo doc --open
+//! ```
+//! Vous trouverez le `.dll` dans `target\release` (ou `target\debug` en cas de compilation en développement)
+//!
+//! ### Interface
+//!
+//! La librarie [`interoptopus`] permets de générer des fichiers d'interface
+//!
+//! Le fichier `tests\bindings.rs` génère le fichier pour Python.
+//!
+//! Il est possible de les générer automatiquement en suivant les documentations suivantes
+//!
+//! - `C#` ([`interoptopus_backend_csharp`])
+//! - `C` ([`interoptopus_backend_c`])
+//! - `Python` ([`interoptopus_backend_cpython`])
+//!
+//! Une fois créés dans le fichier `tests/bindings.rs`, les interfaces peuvent être générées par la commande `cargo test`
+//!
+//! Il est également possible de les créer manuellement
+//!
+//! ### Utilisation
+//!
+//! Vous pouvez utiliser le pseudo-code suivant comme base :
+//!
+//! ```lua
+//! load_dll()
+//! # Démarrage de l'enregistrement
+//! start(<Numéro du port COM (entier sans COM)>)
+//! # Dernier appareil enregistré
+//! get_data_last()
+//! # Toute les données enregistrées
+//! get_data_all()
+//! # Arrêter l'enregistrement
+//! stop()
+//! ```
+
+// Assurer une documentation
+#![deny(rustdoc::broken_intra_doc_links)]
+#![deny(missing_docs)]
+
 #[macro_use]
 extern crate lazy_static;
 extern crate futures;
 
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Utc};
 use interoptopus::patterns::string::*;
 use interoptopus::{ffi_function, function, Inventory, InventoryBuilder};
 use std::collections::HashMap;
-use std::fmt::Write;
 use std::io;
 use std::mem::MaybeUninit;
 use std::str;
@@ -23,35 +103,37 @@ use serde::{Deserialize, Serialize};
 use tokio_serial::SerialPortBuilderExt;
 use tokio_util::codec::{Decoder, Encoder};
 
+// Toutes les instantations globales
 lazy_static! {
-    // Listes des adresses MAC
+    /// Tableau des adresses MAC
     static ref MACS: Arc<Mutex<Vec<String>>> = {
         let macs: Vec<String> = Vec::new();
         Arc::new(Mutex::new(macs))
     };
-    // HashMap avec les canaux ou certaines MAC sont visibles
+    /// HashMap avec les canaux ou certaines MAC sont visibles
     static ref CHANNELS: Arc<Mutex<HashMap<String, Vec<u32>>>> = {
         let cha = HashMap::new();
         Arc::new(Mutex::new(cha))
     };
-    // HashMap avec les SSIDs récupérés
+    /// HashMap avec les SSIDs récupérés
     static ref SSIDS: Arc<Mutex<HashMap<String, Vec<String>>>> = {
         let s = HashMap::new();
         Arc::new(Mutex::new(s))
     };
-    // HashMap avec le dernier RSSI
+    /// HashMap avec le dernier RSSI
     static ref RSSIS: Arc<Mutex<HashMap<String, i32>>> = {
         let r = HashMap::new();
         Arc::new(Mutex::new(r))
     };
-    // HashMap avec les timestamp ou les addresses MAC sont vues en dernier
+    /// HashMap avec les timestamp ou les addresses MAC sont vues en dernier
     static ref LAST_SEEN: Arc<Mutex<HashMap<String, SystemTime>>> = {
         let ts = HashMap::new();
         Arc::new(Mutex::new(ts))
     };
-    // Regex pour la vérification syntaxique de l'addresse mac
+    /// Regex pour la vérification syntaxique de l'addresse MAC
     static ref MAC_REGEX: Regex =
         Regex::new(r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$").unwrap();
+    static ref STARTED: AtomicBool = AtomicBool::new(false);
     // Signal de stop
     static ref STOP: AtomicBool = AtomicBool::new(false);
 }
@@ -83,26 +165,43 @@ impl Encoder<String> for LineCodec {
         Ok(())
     }
 }
-// Structure pour la serialisation
+/// Structure de données pour la sérialisation en JSON
+///
+/// Champs:
+/// | Champ      | Type            | Description                           |
+/// |------------|-----------------|---------------------------------------|
+/// | `mac`      | `String`        | Adresse MAC                           |
+/// | `ts`       | `int`           | UNIX Timestamp (UTC)                  |
+/// | `rssi`     | `int`           | RSSI                                  |
+/// | `channels` | `Array<int>`    | Canaux où le périphérique a été vu    |
+/// | `ssid`     | `Array<String>` | SSIDs broadcastés par le périphérique |
+///
 #[repr(C)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Data {
+    // Addresse MAC
     mac: String,
+    // UNIX Timestamp (UTC)
     ts: i64,
+    // RSSI
     rssi: i32,
+    // Tableau de canaux
     channels: Vec<u32>,
+    // Tableau des SSIDs
     ssids: Vec<String>,
 }
 
 #[tokio::main]
+/// Bootstrap le traitement
 async fn serial_port(port_name: String) -> tokio_serial::Result<()> {
     let port = tokio_serial::new(port_name, 115_200).open_native_async()?;
+    STARTED.store(true, Ordering::SeqCst);
     let mut reader = LineCodec.framed(port);
     // FIFO queue
     let data_queue = HeapRb::<String>::new(255);
     // Recuperer Producteur et Consommateur
     let (mut data_queue_tx, data_queue_rx) = data_queue.split();
-    // Envoi du consommateur dans le thread pour le traitement
+    // Envoi du consommateur dans le thread et dans la fonction parse_str pour le traitement
     thread::spawn(move || {
         parse_str(data_queue_rx);
     });
@@ -110,6 +209,7 @@ async fn serial_port(port_name: String) -> tokio_serial::Result<()> {
         let line = line_result.expect("Failed to read line");
         // Réponds au signal de stop
         if STOP.load(Ordering::SeqCst) {
+            STARTED.store(false, Ordering::SeqCst);
             STOP.store(false, Ordering::SeqCst);
             break;
         }
@@ -119,28 +219,55 @@ async fn serial_port(port_name: String) -> tokio_serial::Result<()> {
     Ok(())
 }
 
+/// Fonction publique pour démarrer l'enregistrement
+///
+/// Paramètres :
+///
+/// | Nom du paramètre | Usage |
+/// | ---------------- | ----- |
+/// | `tty_no` | Numéro du port COM (ex. `3` => `COM3`) |
+///
+/// Retourne
+///   - `false` : Si le système était stoppé
+///   - `true` Si le système était déjà démarré
 #[no_mangle]
 #[ffi_function]
-pub extern "C" fn start(tty_no: u32) -> u8 {
-    let mut port_name: String = "COM".to_owned();
-    // Signal d'arret de l'enregistrement
-    STOP.store(false, Ordering::SeqCst);
-    port_name.push_str(tty_no.to_string().as_str());
-    thread::spawn(move || {
-        serial_port(port_name).unwrap();
-    });
-    0
+#[cfg(windows)]
+pub extern "C" fn start(tty_no: u32) -> bool {
+    if !STARTED.load(Ordering::SeqCst) {
+        let mut port_name: String = "COM".to_owned();
+        // Signal d'arret de l'enregistrement
+        STOP.store(false, Ordering::SeqCst);
+        port_name.push_str(tty_no.to_string().as_str());
+        thread::spawn(move || {
+            serial_port(port_name).unwrap();
+        });
+        false
+    } else {
+        true
+    }
 }
 
+/// Fonction publique pour stopper l'enregistrement
+///
+/// Retourne :
+///   - `false` Si le système était démarré
+///   - `true` Si le système était déjà stoppé
 #[no_mangle]
 #[ffi_function]
-pub extern "C" fn stop() -> u8 {
-    // Demande l'arret
-    STOP.store(true, Ordering::SeqCst);
-    0
+pub extern "C" fn stop() -> bool {
+    if STARTED.load(Ordering::SeqCst) {
+        // Demande l'arret
+        STOP.store(true, Ordering::SeqCst);
+        false
+    } else {
+        // Signaler que le système est déjà arrêté
+        true
+    }
 }
 
 #[allow(clippy::type_complexity)]
+/// Décompose et récupère les données
 fn parse_str(mut data_queue_rx: Consumer<String, Arc<SharedRb<String, Vec<MaybeUninit<String>>>>>) {
     loop {
         while data_queue_rx.is_empty() {
@@ -173,6 +300,7 @@ fn parse_str(mut data_queue_rx: Consumer<String, Arc<SharedRb<String, Vec<MaybeU
     }
 }
 
+/// Enregistre les données récupérées
 fn store(channel: u32, mac_address: String, rssi: String, ssid: String) {
     // Récupérer le lock sur les hashmaps
     let mut mac_table = MACS.lock().unwrap();
@@ -233,65 +361,25 @@ fn store(channel: u32, mac_address: String, rssi: String, ssid: String) {
     // Ajout du dernier RSSI vu
     rssi_table
         .entry(mac_address)
-        .and_modify(|rssi_tmp| *rssi_tmp = (rssi).parse::<i32>().unwrap_or(-50))
-        .or_insert((rssi).parse::<i32>().unwrap_or(-50));
-}
-
-fn fmt_ts(ts: DateTime<Local>) -> Result<String, std::fmt::Error> {
-    let mut formatted: String = String::new();
-    write!(formatted, "{}", ts.format("%Y-%m-%d -- %H:%M:%S"))?;
-    Ok(formatted)
+        .and_modify(|rssi_tmp| *rssi_tmp = (rssi).parse::<i32>().unwrap_or(0))
+        .or_insert((rssi).parse::<i32>().unwrap_or(0));
 }
 
 #[no_mangle]
 #[ffi_function]
-pub extern "C" fn get_data_spec<'a>(mac: AsciiPointer<'static>) -> AsciiPointer<'a> {
-    let mac_cstr = mac.as_c_str().unwrap();
-    let mac_str: String = match mac_cstr.to_str() {
-        Ok(r) => r.to_owned(),
-        Err(e) => e.to_string(),
-    };
-    let seen_macs = Arc::clone(&MACS);
-    let seen_ssids = Arc::clone(&SSIDS);
-    let seen_channels = Arc::clone(&CHANNELS);
-    let seen_rssi = Arc::clone(&RSSIS);
-    let last_seen = Arc::clone(&LAST_SEEN);
-    if let Ok(to_return) = thread::spawn(move || {
-        let last_seen = last_seen.lock().unwrap().clone();
-        let seen_macs = seen_macs.lock().unwrap().clone();
-        let seen_ssids = seen_ssids.lock().unwrap().clone();
-        let seen_channels = seen_channels.lock().unwrap().clone();
-        let seen_rssi = seen_rssi.lock().unwrap().clone();
-        if seen_macs.contains(&mac_str) && MAC_REGEX.is_match(&mac_str) {
-            // Format last seen
-            let seen_ts: DateTime<Local> = (*last_seen.get(&mac_str).unwrap()).into();
-            let seen_ts_str: String = match fmt_ts(seen_ts) {
-                Ok(r) => r,
-                Err(_) => String::from("0000-00-00 - 00:00:00"),
-            };
-
-            format!(
-                "{mac_str} | Last seen : {} | {:?} | {:?} | {:?}\0",
-                seen_ts_str,
-                seen_channels.get(&mac_str).unwrap(),
-                seen_ssids.get(&mac_str),
-                seen_rssi.get(&mac_str).unwrap()
-            )
-        } else {
-            "\0".to_string()
-        }
-    })
-    .join()
-    {
-        println!("{}", to_return);
-        AsciiPointer::from_slice_with_nul(to_return.as_bytes()).unwrap()
-    } else {
-        AsciiPointer::from_slice_with_nul("ERROR\0".as_bytes()).unwrap()
-    }
-}
-
-#[no_mangle]
-#[ffi_function]
+/// Bundle des données en mémoire récoletées pour le dernier appareil pour la génération d'un string JSON
+///
+/// Retourne un `const char *`, encodé en UTF-8, et terminé en NULL (`\0`)
+///
+/// Le timestamp UNIX produit est en UTC généré par [`chrono::DateTime<Utc>::timestamp()`]
+///
+/// En cas d'erreur les valeurs suivantes vont être appliquées dans le JSON
+///
+/// | Champ | Type | Valeur en cas d'erreur |
+/// | ----- | ---- | ---------------------- |
+/// | rssi  | `i32`  | `0` |
+/// | channels | `Vec<u32>` | `[0]` |
+/// | ssids | `Vec<String>` | `[""]` |
 pub extern "C" fn get_data_last<'a>() -> AsciiPointer<'a> {
     let seen_macs = Arc::clone(&MACS);
     let seen_ssids = Arc::clone(&SSIDS);
@@ -305,24 +393,46 @@ pub extern "C" fn get_data_last<'a>() -> AsciiPointer<'a> {
         let seen_ssids = seen_ssids.lock().unwrap().clone();
         let seen_channels = seen_channels.lock().unwrap().clone();
         let seen_rssi = seen_rssi.lock().unwrap().clone();
-        let seen_ts: DateTime<Local> = (*last_seen.get(mac_str).unwrap()).into();
-        format!(
-            "{mac_str} | Last seen : {} | {:?} | {:?} | {:?}\0",
-            seen_ts.format("%Y-%m-%d -- %H:%M:%S"),
-            seen_channels.get(mac_str).unwrap(),
-            seen_ssids.get(mac_str),
-            seen_rssi.get(mac_str).unwrap()
-        )
+        let seen_ts: DateTime<Utc> = (*last_seen.get(mac_str).unwrap()).into();
+        let unix_utc_ts: i64 = seen_ts.timestamp();
+        let mac_vec: Data = Data {
+            mac: mac_str.to_owned(),
+            ts: unix_utc_ts,
+            rssi: seen_rssi.get(mac_str).unwrap_or(&0).to_owned(),
+            channels: seen_channels.get(mac_str).unwrap_or(&vec![0]).to_owned(),
+            ssids: seen_ssids
+                .get(mac_str)
+                .unwrap_or(&vec![String::from("")])
+                .to_owned(),
+        };
+        json_serialize(mac_vec)
     })
     .join()
     .unwrap();
-    AsciiPointer::from_slice_with_nul(to_return.as_bytes()).unwrap()
+    let ret = to_return.unwrap_or(String::from(""));
+    let mut nulled_safe_ret = ret.replace('\0', "");
+    nulled_safe_ret.push('\0');
+    AsciiPointer::from_slice_with_nul(nulled_safe_ret.as_bytes())
+        .unwrap_or(AsciiPointer::from_slice_with_nul(String::from("\0").as_bytes()).unwrap())
 }
 
 #[cfg(feature = "json")]
 #[no_mangle]
 #[ffi_function]
-pub extern "C" fn get_data_all_json<'a>() -> AsciiPointer<'a> {
+/// Bundle de toutes les données en mémoire pour la génération d'un fichier JSON
+///
+/// Retourne un `const char *`, encodé en UTF-8, et terminé en NULL (`\0`)
+///
+/// Le timestamp UNIX produit est en UTC généré par [`chrono::DateTime<Utc>::timestamp()`]
+///
+/// En cas d'erreur les valeurs suivantes vont être appliquées dans le JSON
+///
+/// | Champ | Type | Valeur en cas d'erreur |
+/// | ----- | ---- | ---------------------- |
+/// | rssi  | `i32` | `0` |
+/// | channels | `Vec<u32>` | `[0]` |
+/// | ssids | `Vec<String>` | `[""]` |
+pub extern "C" fn get_data_all<'a>() -> AsciiPointer<'a> {
     let mut data_vec: Vec<Data> = Vec::new();
     let seen_macs = Arc::clone(&MACS);
     let seen_ssids = Arc::clone(&SSIDS);
@@ -337,11 +447,11 @@ pub extern "C" fn get_data_all_json<'a>() -> AsciiPointer<'a> {
         let seen_rssi = seen_rssi.lock().unwrap().clone();
         for mac in seen_macs.into_iter() {
             let seen_ts: DateTime<Utc> = (*last_seen.get(&mac).unwrap()).into();
-            let seen_ts_str: i64 = seen_ts.timestamp();
+            let unix_utc_ts: i64 = seen_ts.timestamp();
             let mac_vec: Data = Data {
                 mac: mac.to_owned(),
-                ts: seen_ts_str,
-                rssi: seen_rssi.get(&mac).unwrap_or(&-1).to_owned(),
+                ts: unix_utc_ts,
+                rssi: seen_rssi.get(&mac).unwrap_or(&0).to_owned(),
                 channels: seen_channels.get(&mac).unwrap_or(&vec![0]).to_owned(),
                 ssids: seen_ssids
                     .get(&mac)
@@ -356,21 +466,24 @@ pub extern "C" fn get_data_all_json<'a>() -> AsciiPointer<'a> {
     .unwrap();
     let mut ret = to_return.unwrap_or(String::from(""));
     ret.push('\0');
-    AsciiPointer::from_slice_with_nul(ret.as_bytes()).unwrap()
+    AsciiPointer::from_slice_with_nul(ret.as_bytes())
+        .unwrap_or(AsciiPointer::from_slice_with_nul(String::from("\0").as_bytes()).unwrap())
 }
 
 #[cfg(feature = "json")]
+/// Convertis en JSON les structures envoyées depuis [`get_data_last()`] et [`get_data_all()`]
 fn json_serialize(data_vec: impl Serialize) -> Result<String, serde_json::Error> {
     serde_json::to_string(&data_vec)
 }
 
-// Define our FFI interface as `ffi_inventory` containing
-// a single function `my_function`. Types are inferred.
+/// Inventaire pour la génèration des fichiers d'accès
+///
+/// Utilise [`interoptopus::InventoryBuilder`]
 pub fn ffi_inventory() -> Inventory {
     InventoryBuilder::new()
         .register(function!(start))
         .register(function!(stop))
-        .register(function!(get_data_all_json))
+        .register(function!(get_data_all))
         .register(function!(get_data_last))
         .inventory()
 }

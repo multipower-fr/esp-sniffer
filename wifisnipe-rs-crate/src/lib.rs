@@ -1,5 +1,6 @@
 //! Traite les données arrivant du programme `esp-sniffer` pour NodeMCU
 //!
+//! ## Schéma
 //! Utilise les structures suivantes en entrée :
 //!
 //! Si le SSID est vide
@@ -7,9 +8,62 @@
 //!
 //! Si le SSID est présent
 //! - `\u{2}canal\u{31}mac\u{31}rssi\{31}ssid\{31}\u{3}`
+//!
+//! ## Compilation :
+//!
+//! - Installez [git](https://git-scm.com/download/win) et [gh](https://github.com/cli/cli)
+//! - Installez [Visual Studio](https://visualstudio.microsoft.com/) en sélectionnant `Développement Desktop en C++` dans `Charges de Travail` et `Anglais` dans `Modules Linguistiques`
+//! - Installez [Rustup](https://rustup.rs/), l'installateur de Rust
+//! - Ouvrez une fenêtre PowerShell en tant qu'Administrateur et exécuter les commandes suivantes :
+//!
+//! ```ps1
+//! # Se connecter a votre compte GitHub
+//! gh auth login
+//! # Installez Rust Stable
+//! rustup toolchain install stable
+//! # Cloner la repo
+//! gh repo clone multipower-fr/esp-sniffer
+//! # Allez dans le dossier de la *crate* (librairie)
+//! cd esp-sniffer\wifisnipe-rs-crate
+//! # Compiler la libarie (enlever le --release pour la version non-optimisée de développement)
+//! cargo build --release
+//! ```
+//! Vous trouverez le `.dll` dans `target\release` (ou `target\debug` en cas de compilation en développement)
+//!
+//! ## Interface
+//!
+//! La librarie [`interoptopus`] permets de générer des fichiers d'interface
+//!
+//! Le fichier `tests\bindings.rs` génère le fichier pour Python.
+//!
+//! Il est possible de les générer automatiquement en suivant les documentations suivantes
+//! 
+//! - `C#` ([`interoptopus_backend_csharp`])
+//! - `C` ([`interoptopus_backend_c`])
+//! - `Python` ([`interoptopus_backend_cpython`])
+//!
+//! Une fois créé, les interfaces peuvent être générées par la commande `cargo test`
+//! 
+//! Il est également possible de les créer manuellement
+//!
+//! ## Utilisation
+//!
+//! Vous pouvez utiliser le pseudo-code suivant comme base :
+//!
+//! ```lua
+//! load_dll()
+//! # Démarrage de l'enregistrement
+//! start(<Numéro du port COM (entier sans COM)>)
+//! # Dernier appareil enregistré
+//! get_data_last()
+//! # Toute les données enregistrées
+//! get_data_all()
+//! # Arrêter l'enregistrement
+//! stop()
+//! ```
 
 #![deny(rustdoc::broken_intra_doc_links)]
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 #[macro_use]
 extern crate lazy_static;
 extern crate futures;
@@ -97,7 +151,7 @@ impl Encoder<String> for LineCodec {
     }
 }
 /// Structure de données pour la sérialisation en JSON
-/// 
+///
 /// Champs:
 /// | Champ      | Type            | Description                           |
 /// |------------|-----------------|---------------------------------------|
@@ -106,7 +160,7 @@ impl Encoder<String> for LineCodec {
 /// | `rssi`     | `int`           | RSSI                                  |
 /// | `channels` | `Array<int>`    | Canaux où le périphérique a été vu    |
 /// | `ssid`     | `Array<String>` | SSIDs broadcastés par le périphérique |
-/// 
+///
 #[repr(C)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Data {
@@ -153,11 +207,11 @@ async fn serial_port(port_name: String) -> tokio_serial::Result<()> {
 /// Fonction publique pour démarrer l'enregistrement
 ///
 /// Paramètres :
-/// 
+///
 /// | Nom du paramètre | Usage |
 /// | ---------------- | ----- |
 /// | `tty_no` | Numéro du port COM (ex. `3` => `COM3`) |
-/// 
+///
 /// Retourne
 ///   - `false` : Si le système était stoppé
 ///   - `true` Si le système était déjà démarré
@@ -300,7 +354,7 @@ fn store(channel: u32, mac_address: String, rssi: String, ssid: String) {
 #[ffi_function]
 /// Bundle des données en mémoire récoletées pour le dernier appareil pour la génération d'un string JSON
 ///
-/// Retourne un `const char *` terminé en NULL (`'\0'`)
+/// Retourne un `const char *`, encodé en UTF-8, et terminé en NULL (`\0`)
 ///
 /// Le timestamp UNIX produit est en UTC généré par [`chrono::DateTime<Utc>`]
 ///
@@ -352,7 +406,7 @@ pub extern "C" fn get_data_last<'a>() -> AsciiPointer<'a> {
 #[ffi_function]
 /// Bundle de toutes les données en mémoire pour la génération d'un fichier JSON
 ///
-/// Retourne un `const char *` terminé en NULL (`\0`)
+/// Retourne un `const char *`, encodé en UTF-8, et terminé en NULL (`\0`)
 ///
 /// Le timestamp UNIX produit est en UTC généré par [`chrono::DateTime<Utc>`]
 ///

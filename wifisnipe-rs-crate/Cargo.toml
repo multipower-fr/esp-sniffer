@@ -14,22 +14,22 @@ bytes = "1.4.0"
 chrono = "0.4.24"
 futures = "0.3.27"
 lazy_static = "1.4.0"
-libc = { version = "0.2.139", features = ["extra_traits"] }
-regex = "1.7.1"
+libc = { version = "0.2.140", features = ["extra_traits"] }
+regex = "1.7.2"
 ringbuf = "0.3.2"
-interoptopus_backend_csharp = "0.14.17"
-interoptopus_backend_cpython = "0.14.15"
 tokio = { version = "1.26.0", features = ["full"] }
 tokio-serial = "5.4.4"
 tokio-util = { version = "0.7.7", features = ["full"] }
 interoptopus = "0.14.15"
-rifgen = "0.1.61"
-serde = { version = "1.0.152", optional = true, features = ["derive"] }
+interoptopus_backend_cpython = { version = "0.14.15", optional = true }
+interoptopus_backend_csharp = { version = "0.14.17", optional = true }
+interoptopus_backend_c = { version = "0.14.15", optional = true }
+serde = { version = "1.0.158", optional = true, features = ["derive"] }
 serde_json = { version = "1.0.94", optional = true }
 
-[build-dependencies]
-rifgen = "0.1.61"
-
 [features]
-default = ["json"]
+default = ["json", "python", "csharp", "c"]
 json = ["dep:serde", "dep:serde_json", "chrono/serde"]
+python = ["dep:interoptopus_backend_cpython"]
+csharp = ["dep:interoptopus_backend_csharp"]
+c = ["dep:interoptopus_backend_c"]

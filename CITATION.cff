@@ -1,0 +1,18 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: esp-sniffer
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Nicolas
+    family-names: FORMICHELLA
+    email: stigpro@outlook.fr
+    orcid: 'https://orcid.org/0000-0001-6711-2822'
+repository-code: 'https://github.com/multipower-fr/esp-sniffer'
+abstract: Probe Request Sniffer
+commit: 2737c82
+date-released: '2023-03-24'
